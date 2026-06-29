@@ -1,53 +1,61 @@
 # Pine Script® v6 Type System Reference
 
-In Pine Script® v6, the type system has been made significantly stricter and more robust to prevent common runtime bugs and make code evaluation predictable.
+Source: https://www.tradingview.com/pine-script-docs/language/type-system/
+Status: unverified
 
-## 1. Stricter Boolean Logic
+## Core Overview
 
-### No `na` for Booleans
-In Pine Script v6, boolean variables can only have two states: `true` or `false`. They can no longer be `na`.
-- Attempting to assign `na` to a `bool` variable will cause a compiler error or cast warning.
-- Because booleans cannot be `na`, you cannot use functions like `na()`, `nz()`, or `fixnan()` with boolean arguments. Doing so will result in compilation errors.
+Pine Script v6 uses **types** to categorize data and determine compatible operations and functions, and **type qualifiers** to indicate when values are accessible and whether they can change across executions. A qualified type combines both, and this system is tightly linked to the execution model and time series structure.
 
-### Removal of Implicit Casting
-Implicit casting of numeric types (`int` and `float`) to `bool` is no longer allowed.
-- **In v5 and earlier**, numeric values were implicitly treated as boolean inside conditionals (where `0` or `na` was `false`, and non-zero was `true`).
-- **In v6**, this is prohibited. You must use explicit comparison operators.
+## Type Qualifiers
 
-#### Correcting Conditions:
-```pinescript
-// ❌ INVALID in v6
-int x = 5
-if x
-    strategy.close_all()
+Qualifiers follow a strict hierarchy:
 
-//  VALID in v6
-int x = 5
-if x != 0
-    strategy.close_all()
+```
+const < input < simple < series
 ```
 
-## 2. Lazy Evaluation of Logical Operators
+| Qualifier | Timing | Mutability | Compatibility | Key Details |
+|-----------|--------|------------|---------------|-------------|
+| `const` | Compile time | Constant across all executions | Accepts only `const` values | All literals and `const`-only expressions inherit this qualifier. The `const` keyword prevents reassignment, even to other constant values. |
+| `input` | Input time (when user confirms inputs/chart settings) | Constant at runtime | Accepts `const` and `input` values | `input.*()` returns `input` values. Changing an input reloads the script. `chart.*` chart-state variables are `input`. |
+| `simple` | Runtime, first available bar only | Constant across all subsequent bars | Accepts `const`, `input`, and `simple` values | Most `syminfo.*` and `timeframe.*` values are `simple`. |
+| `series` (strongest) | Runtime | Dynamic, only qualifier that can change across bars | Accepts all qualifier values | All bar data variables and runtime calculation results are `series`. Any expression that can vary per bar inherits this qualifier. |
 
-The `and` and `or` logical operators now use lazy (short-circuit) evaluation.
-- **Lazy `and`**: If the left operand evaluates to `false`, the right operand is not evaluated at all.
-- **Lazy `or`**: If the left operand evaluates to `true`, the right operand is not evaluated at all.
-- This is highly useful for preventing errors. For example, if you check if an array index exists before accessing it, the second check will not be executed if the first check is false:
-```pinescript
-// Safe in v6 (no index-out-of-bounds error if array is empty)
-if array.size(myArray) > 0 and array.get(myArray, 0) == targetValue
-    log.info("Match found")
+### Qualifier Rules
+
+1. A parameter or operation accepting a qualifier allows values with weaker qualifiers, but not stronger ones.
+2. Expression results inherit the strongest qualifier used in the calculation.
+3. Qualifiers cannot be downgraded to make values compatible with stricter operations.
+
+### Common Pitfall
+
+```pine
+//@version=6
+var string scriptTitle = "My indicator for " + syminfo.ticker // simple string
+indicator(title = scriptTitle) // ERROR: title requires const string
 ```
 
-## 3. Type Forms (Qualifiers)
+## Types
 
-Every variable in Pine Script has a data type and a type qualifier (form). The qualifier determines when the variable's value can change:
+### Value Types
 
-| Qualifier | Description |
-| :--- | :--- |
-| **`const`** | Known at compile time (e.g., literal values, mathematical calculations on constants). |
-| **`input`** | Determined in the script settings panel by the user. Remains constant during script execution. |
-| **`simple`** | Value is established before script execution starts, but can vary by symbol/timeframe (e.g., symbol inputs). |
-| **`series`** | The value can change on every bar of the chart (e.g., `close`, `open`, or values calculated dynamically on each bar). |
+| Type | Description | Notes |
+|------|-------------|-------|
+| `int` | Whole numbers | Literals: `1`, `-1`, `750` |
+| `float` | Floating-point numbers | Internal precision: `1e-16` |
+| `bool` | Boolean values | Never returns `na` |
+| `color` | RGB colors | Format: `#RRGGBB` or `#RRGGBBAA` |
+| `string` | Text sequences | Concatenate with `+` / `+=` |
+| Enum types | Named sets of distinct constant members | Use `input.enum()` for dropdown inputs |
 
-In v6, variables initialized with literals (like `5` or `"string"`) default to their most specific qualifiers, but the compiler automatically converts them to broader qualifiers (`series`) where needed.
+### Reference Types
+
+Reference types hold references (IDs) to objects in memory, always inherit `series`, and are incompatible with arithmetic/logical operators. Examples include collection types, drawing types, `plot`, and UDTs created with `type`.
+
+## When Explicit Types Are Required
+
+1. Declaring variables, UDF parameters, or UDT fields with initial `na` values.
+2. Defining parameters of exported library functions or declared exported constants.
+3. Using qualifier keywords in variable or parameter declarations.
+4. Declaring the first parameter of a user-defined method.

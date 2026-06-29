@@ -1,64 +1,104 @@
 # Pine Script® v6 Execution Model Reference
 
-Understanding how TradingView compiles and executes Pine Script code is critical to building indicators and strategies that calculate correctly and run efficiently.
+Source: https://www.tradingview.com/pine-script-docs/language/execution-model/
+Status: unverified
 
-## 1. Bar-by-Bar Execution
+## Core Overview
 
-Pine Script executes on charts chronologically, from the oldest historical bar to the newest real-time tick.
-- The script is called once for every bar on the chart.
-- Variables declared without `var` or `varip` are re-initialized on every single bar.
-- On historical bars, the script executes once at the close of the bar.
-- On real-time bars (the current active bar), the script executes on every price tick.
+Pine Script uses an **event-driven, sequential execution model**:
+- A script executes repeatedly across historical bars and realtime ticks.
+- After each execution on a closed bar, results are committed to an internal time series.
+- The execution model is tightly coupled with the type system.
 
----
+Declaration statements like `indicator()` or `strategy()` run at compile time, not during bar executions.
 
-## 2. Variable Persistence: `var` and `varip`
+## The Basics
 
-### `var` Keyword
-Variables declared with `var` are initialized only once on the first bar of the chart. Their values persist across bars.
-- On real-time bars, if a variable modified with `var` is changed during a tick, its value is **rolled back** to the value it had at the close of the previous bar if the tick is updated, and is only finalized when the bar closes.
-```pinescript
-// Counts the total number of bars on the chart
-var int barCount = 0
-barCount := barCount + 1
+### Bar-by-Bar Execution
+
+- A chart dataset is a sequence of bars from earliest to most recent.
+- The script executes once per historical bar.
+- Built-in bar variables (`open`, `high`, `low`, `close`, `volume`) update before each execution.
+
+#### Variable Declaration Basics
+
+- Variables are re-declared and reinitialized on every execution by default.
+- Use `var` to initialize once on the first bar and persist across bars.
+- Use `varip` to persist across bars and ticks without rollback.
+
+```pine
+//@version=6
+indicator("Repeated declarations demo")
+int x = 0
+x += 10
+plot(x, "`x` value", color.blue, 3)
 ```
 
-### `varip` Keyword (Var Intra-Bar)
-Variables declared with `varip` persist across bars *and* do **not** roll back between ticks on a real-time bar. Their values accumulate tick-by-tick.
-- Used for tracking intra-bar data, such as counting ticks or measuring time between updates.
-```pinescript
-// Counts the number of ticks that occur during a single bar
-varip int tickCount = 0
-if barstate.isnew
-    tickCount := 0
-tickCount := tickCount + 1
+```pine
+//@version=6
+indicator("Persistent declarations demo")
+var int x = 0
+x += 10
+plot(x, "`x` series", color.blue, 3)
 ```
 
----
+### Storing and Using Data from Previous Bars
 
-## 3. Barstate Variables
+- Use the history-referencing operator `[]` to access past values.
+- Use `ta.*()` functions to compute values from internal historical data.
 
-Barstate flags allow the script to determine which phase of execution it is currently running in.
+```pine
+//@version=6
+indicator("Storing and using data from previous bars demo")
+float priceReturn = ta.change(close, 1) / close[1]
+color returnColor = priceReturn > priceReturn[1] ? color.teal : color.maroon
+plot(priceReturn, "Price return", returnColor, 1, plot.style_columns)
+```
 
-| Variable | Description |
-| :--- | :--- |
-| **`barstate.ishistory`** | True on all historical bars (bars that have already closed). |
-| **`barstate.isrealtime`** | True on the active, real-time bar. |
-| **`barstate.isnew`** | True on the first tick/execution of a new bar. |
-| **`barstate.islast`** | True on the very last bar (real-time bar, or the last historical bar if chart has no real-time data). |
-| **`barstate.islastconfirmedhistory`** | True on the last historical bar that has closed. Excellent for drawing static visual elements. |
+### Realtime Bars
 
----
+- Historical bars: closed, confirmed data; script executes once per bar.
+- Realtime bars: open, unconfirmed data; indicators execute once per tick to recalculate.
+- Before each recalculation, **rollback** resets applicable data to the last committed state from the previous bar’s close.
+- Only values from the final tick are committed after the bar closes.
 
-## 4. Bar Indexes and History
+```pine
+//@version=6
+indicator("Recalculation on realtime bars demo")
+int lengthInput = input.int(10, "Length", 1)
+float stochastic = ta.stoch(close, high, low, lengthInput)
+plot(stochastic, "Stochastic %K", color.teal, 3)
+bgcolor(barstate.isrealtime ? color.new(color.purple, 80) : na)
+```
 
-### `bar_index`
-- The `bar_index` variable represents the index of the current bar (starts at `0` for the oldest bar on the chart).
-- Accessible to trace how many bars the chart contains.
+## The Details
 
-### Lookback Limit
-- The historical operator `[]` lets you look back in time (e.g., `close[1]` is the close of the previous bar).
-- **Max Bars Back**: TradingView allocates buffer memory for history dynamically. If the compiler cannot determine how far back a variable is referenced, it may crash. You can resolve this by adding `max_bars_back` in your indicator/strategy declaration:
-  ```pinescript
-  indicator("My Script", max_bars_back = 500)
-  ```
+### Executions on Historical Bars
+
+When a script loads, its compiled code runs from the oldest accessible bar to the newest, then commits outputs to the internal time series. By default:
+- Indicators and libraries execute once per historical bar.
+- Strategies execute once per bar by default, but can execute more if `calc_on_order_fills = true`.
+
+### Rollback in Detail
+
+- Applies to variables declared without `varip`.
+- Reinitializes non-`varip` variables before each new execution.
+- Reverts `var` variables to the last committed state from the previous bar.
+- Replaces temporary plot outputs (plot*, `bgcolor`, `barcolor`, `fill`) on the current bar.
+
+### Strategy Realtime Behavior
+
+- Default: strategies execute only once per bar at closing tick.
+- `calc_on_every_tick = true`: execute after each update on an open bar.
+- `calc_on_order_fills = true`: execute on each tick where the broker emulator fills an order.
+
+## barstate Variables
+
+| Variable | Meaning |
+|----------|---------|
+| `barstate.ishistory` | `true` on all closed historical bars |
+| `barstate.isrealtime` | `true` on the active realtime bar |
+| `barstate.isnew` | `true` on the first tick of a new bar |
+| `barstate.islast` | `true` on the last bar in the dataset |
+| `barstate.islastconfirmedhistory` | `true` on the last confirmed historical bar |
+| `barstate.isconfirmed` | `true` on confirmed closed bars |
